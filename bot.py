@@ -82,7 +82,7 @@ from aiogram.fsm.context import FSMContext
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     
-    sticker_id = "CAACAgIAAxkBAAEF7UJqcQnSE6gQF_xPzTLB2mwzAcUDbQACPI8AAitmkUo0YlhTWWQrlT0E"
+    sticker_id = "CAACAgIAAxkBAAEtMJRqcQzAYm1KzPFcKb4eA5BYHJVQKAACPI8AAitmkUouHz6oPjKx0z0E"
     gif_id = "AAMCBAADGQEAAS0we2pxC43A3ulNLmEe8Uh8F1qCVOw7AAKaCgACUbVcUW9FKffe04GnAQAHbQADPQQ"
     
     # 1. Відправляємо стікер
