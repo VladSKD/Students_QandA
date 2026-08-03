@@ -1,6 +1,7 @@
 import asyncio
 import re
 import os
+from aiohttp import web
 import asyncpg
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
@@ -338,16 +339,40 @@ async def reply_from_admin(message: Message):
         except Exception as e:
             await message.reply(f"❌ Помилка: {e}")
 
+import os
+from aiohttp import web
+
+# Функція-відповідь для пінгера (UptimeRobot)
+async def health_check(request):
+    return web.Response(text="Bot is awake and running!")
+
 # ================= ЗАПУСК =================
 async def main():
+    # 1. Твоя ініціалізація БД та роутерів
     await init_db()
     dp.include_router(router)
     print("Бот запущено (PostgreSQL)...")
+    
+    # 2. --- БЛОК ДЛЯ RENDER (запуск вебсервера) ---
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    port = int(os.environ.get("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"Вебсервер для Render запущено на порту {port}")
+    # ----------------------------------------------
+    
     try:
+        # 3. Запуск самого бота
         await dp.start_polling(bot)
     finally:
+        # 4. Очищення підключень після зупинки бота
         if pool:
             await pool.close()
+        await runner.cleanup() # Не забуваємо зупинити і вебсервер
 
 if __name__ == "__main__":
     asyncio.run(main())
