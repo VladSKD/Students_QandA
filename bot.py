@@ -73,28 +73,9 @@ def get_persistent_kb():
     )
 
 # ================= БАЗОВІ КОМАНДИ =================
-import asyncio
-from aiogram.types import Message
-from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    
-    sticker_id = "CAACAgIAAxkBAAEtMJRqcQzAYm1KzPFcKb4eA5BYHJVQKAACPI8AAitmkUouHz6oPjKx0z0E"
-    gif_id = "AAMCBAADGQEAAS0we2pxC43A3ulNLmEe8Uh8F1qCVOw7AAKaCgACUbVcUW9FKffe04GnAQAHbQADPQQ"
-    
-    # 1. Відправляємо стікер
-    await message.answer_sticker(sticker=sticker_id)
-    
-    # Невеличка пауза, щоб Телеграм гарантовано зберіг порядок повідомлень
-    await asyncio.sleep(0.1)
-    
-    # 2. Відправляємо гіфку
-    await message.answer_animation(animation=gif_id)
-    
-    # 3. Відправляємо текстові повідомлення з клавіатурами
     await message.answer("Привіт! 👋 Я бот-помічник.", reply_markup=get_persistent_kb())
     await message.answer("Обери потрібний розділ нижче:", reply_markup=get_main_kb())
 
