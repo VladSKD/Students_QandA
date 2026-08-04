@@ -12,7 +12,7 @@ from aiogram.filters import CommandStart, Command
 # ================= НАЛАШТУВАННЯ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_IDS = [6132348011, 965741347]  
+ADMIN_IDS = [6132348011, 965741347, 484191739]  
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
