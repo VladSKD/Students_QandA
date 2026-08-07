@@ -78,6 +78,16 @@ def get_persistent_kb():
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
+    
+    # === ЗБЕРЕЖЕННЯ КОРИСТУВАЧА ДЛЯ СТАТИСТИКИ ===
+    async with pool.acquire() as conn:
+        # ON CONFLICT DO NOTHING означає: якщо цей ID вже є, не видавати помилку, а просто йти далі
+        await conn.execute(
+            "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+            message.from_user.id
+        )
+    # ===============================================
+
     await message.answer("Привіт! 👋 Я бот-помічник.", reply_markup=get_persistent_kb())
     await message.answer("Обери потрібний розділ нижче:", reply_markup=get_main_kb())
 
@@ -178,7 +188,8 @@ async def cmd_admin_panel(message: Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Додати нове питання", callback_data="admin_add")],
         [InlineKeyboardButton(text="⚙️ Редагувати / Видалити", callback_data="admin_manage")],
-        [InlineKeyboardButton(text="📥 Нерозв'язані питання", callback_data="admin_pending_tickets")]
+        [InlineKeyboardButton(text="📥 Нерозв'язані питання", callback_data="admin_pending_tickets")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")] # <--- НОВА КНОПКА
     ])
     await message.answer("🛠 <b>Панель адміністратора</b>\nОбери дію:", reply_markup=kb, parse_mode="HTML")
 
@@ -188,10 +199,22 @@ async def admin_back_to_panel(callback: CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Додати нове питання", callback_data="admin_add")],
         [InlineKeyboardButton(text="⚙️ Редагувати / Видалити", callback_data="admin_manage")],
-        [InlineKeyboardButton(text="📥 Нерозв'язані питання", callback_data="admin_pending_tickets")]
+        [InlineKeyboardButton(text="📥 Нерозв'язані питання", callback_data="admin_pending_tickets")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")] # <--- НОВА КНОПКА
     ])
     await callback.message.edit_text("🛠 <b>Панель адміністратора</b>\nОбери дію:", reply_markup=kb, parse_mode="HTML")
 
+
+@router.callback_query(F.data == "admin_stats", F.from_user.id.in_(ADMIN_IDS))
+async def admin_show_stats(callback: CallbackQuery):
+    async with pool.acquire() as conn:
+        # Рахуємо кількість записів у таблиці users
+        users_count = await conn.fetchval("SELECT COUNT(*) FROM users")
+        
+    # Виводимо спливаюче віконце з цифрою
+    await callback.answer(f"👥 Унікальних користувачів бота: {users_count}", show_alert=True)
+
+    
 # ================= ДОДАВАННЯ FAQ =================
 @router.callback_query(F.data == "admin_add", F.from_user.id.in_(ADMIN_IDS))
 async def admin_add_start(callback: CallbackQuery, state: FSMContext):
