@@ -156,15 +156,20 @@ async def show_faq_in_category(callback: CallbackQuery):
 async def show_faq_answer(callback: CallbackQuery):
     faq_id = int(callback.data.replace("faq_q_", ""))
     async with pool.acquire() as conn:
-        record = await conn.fetchrow("SELECT category, answer FROM faq WHERE id = $1", faq_id)
+        record = await conn.fetchrow("SELECT category, question, answer FROM faq WHERE id = $1", faq_id)
         
     if record:
         cat = record['category']
-        # Робимо кнопку повернення не в головне меню, а назад у поточну категорію
+        q_text = record['question']
+        a_text = record['answer']
+        
+        # Формуємо текст: спочатку виділене питання, а під ним відповідь
+        full_text = f"<b>{q_text}</b>\n\n{a_text}"
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Назад до питань", callback_data=f"faq_cat_{cat}")]
         ])
-        await callback.message.edit_text(f"ℹ️ {record['answer']}", reply_markup=kb)
+        await callback.message.edit_text(full_text, reply_markup=kb, parse_mode="HTML")
 
 # ================= ПАНЕЛЬ АДМІНІСТРАТОРА =================
 @router.message(Command("admin"), F.from_user.id.in_(ADMIN_IDS))
