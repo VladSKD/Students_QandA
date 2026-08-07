@@ -104,8 +104,8 @@ async def open_faq_categories(callback: CallbackQuery):
     
     # === ДОДАЄМО ТВОЇ ОКРЕМІ КНОПКИ ===
     # Варіант 1: Якщо це просто посилання, які відкривають Telegram-канали/чати
-    keyboard.append([InlineKeyboardButton(text="💬 Чати 1 курсу", url="https://t.me/твій_чат")])
-    keyboard.append([InlineKeyboardButton(text="🌐 Наші соц. мережі", url="https://t.me/твій_канал")])
+    keyboard.append([InlineKeyboardButton(text="💬 Чати 1 курсу", url="https://linktr.ee/students_nulp_vstup")])
+    keyboard.append([InlineKeyboardButton(text="🌐 Наші соц. мережі", url="https://linktr.ee/students_nulp")])
     
     # Варіант 2: Якщо ти хочеш, щоб бот надсилав текст із посиланнями у відповідь, 
     # замість url="..." використовуй callback_data="chats_info" і створи для них окремий обробник (див. нижче).
