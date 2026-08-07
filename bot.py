@@ -24,6 +24,7 @@ class ContactAdmin(StatesGroup):
     waiting_for_message = State()
 
 class AddFAQ(StatesGroup):
+    waiting_for_category = State() # Новий стан для групи питань
     waiting_for_question = State()
     waiting_for_answer = State()
     
@@ -39,9 +40,10 @@ async def init_db():
     global pool
     pool = await asyncpg.create_pool(DATABASE_URL)
     async with pool.acquire() as conn:
-        await conn.execute("""
+       await conn.execute("""
             CREATE TABLE IF NOT EXISTS faq (
                 id SERIAL PRIMARY KEY,
+                category TEXT NOT NULL,
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL
             );
@@ -91,25 +93,54 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 
 # ================= ЛОГІКА FAQ =================
 @router.callback_query(F.data == "faq_menu")
-async def open_faq(callback: CallbackQuery):
+async def open_faq_categories(callback: CallbackQuery):
     async with pool.acquire() as conn:
-        faqs = await conn.fetch("SELECT id, question FROM faq ORDER BY id ASC")
+        # Отримуємо унікальні категорії
+        categories = await conn.fetch("SELECT DISTINCT category FROM faq ORDER BY category ASC")
+        
+    keyboard = []
+    for c in categories:
+        cat = c['category']
+        # Створюємо кнопку для кожної групи питань
+        keyboard.append([InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"faq_cat_{cat}")])
+    
+    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
+    
+    text = "Обери групу питань:" if categories else "Поки немає жодного питання."
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+
+@router.callback_query(F.data.startswith("faq_cat_"))
+async def show_faq_in_category(callback: CallbackQuery):
+    # Отримуємо назву категорії з callback_data
+    category = callback.data.replace("faq_cat_", "")
+    
+    async with pool.acquire() as conn:
+        # Шукаємо питання лише для вибраної категорії
+        faqs = await conn.fetch("SELECT id, question FROM faq WHERE category = $1 ORDER BY id ASC", category)
         
     keyboard = []
     for f in faqs:
-        keyboard.append([InlineKeyboardButton(text=f['question'], callback_data=f"faq_{f['id']}")])
-    keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
+        # Щоб не було конфліктів, змінимо префікс на faq_q_
+        keyboard.append([InlineKeyboardButton(text=f['question'], callback_data=f"faq_q_{f['id']}")])
+        
+    # Кнопка повернення до списку категорій
+    keyboard.append([InlineKeyboardButton(text="⬅️ До груп питань", callback_data="faq_menu")])
     
-    await callback.message.edit_text("Ось популярні питання:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.message.edit_text(f"📂 <b>Група:</b> {category}\nОбери питання:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard), parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("faq_") & (F.data != "faq_menu"))
+@router.callback_query(F.data.startswith("faq_q_"))
 async def show_faq_answer(callback: CallbackQuery):
-    faq_id = int(callback.data.replace("faq_", ""))
+    faq_id = int(callback.data.replace("faq_q_", ""))
     async with pool.acquire() as conn:
-        record = await conn.fetchrow("SELECT answer FROM faq WHERE id = $1", faq_id)
+        record = await conn.fetchrow("SELECT category, answer FROM faq WHERE id = $1", faq_id)
         
     if record:
-        await callback.message.edit_text(f"ℹ️ {record['answer']}", reply_markup=get_back_kb())
+        cat = record['category']
+        # Робимо кнопку повернення не в головне меню, а назад у поточну категорію
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Назад до питань", callback_data=f"faq_cat_{cat}")]
+        ])
+        await callback.message.edit_text(f"ℹ️ {record['answer']}", reply_markup=kb)
 
 # ================= ПАНЕЛЬ АДМІНІСТРАТОРА =================
 @router.message(Command("admin"), F.from_user.id.in_(ADMIN_IDS))
@@ -135,7 +166,13 @@ async def admin_back_to_panel(callback: CallbackQuery, state: FSMContext):
 # ================= ДОДАВАННЯ FAQ =================
 @router.callback_query(F.data == "admin_add", F.from_user.id.in_(ADMIN_IDS))
 async def admin_add_start(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Введи текст НОВОГО ПИТАННЯ (те, що буде на кнопці):")
+    await callback.message.edit_text("Введи назву ГРУПИ ПИТАНЬ (категорію):")
+    await state.set_state(AddFAQ.waiting_for_category)
+
+@router.message(AddFAQ.waiting_for_category, F.text)
+async def process_faq_category(message: Message, state: FSMContext):
+    await state.update_data(category=message.text)
+    await message.answer("Введи текст НОВОГО ПИТАННЯ (те, що буде на кнопці):")
     await state.set_state(AddFAQ.waiting_for_question)
 
 @router.message(AddFAQ.waiting_for_question, F.text)
@@ -148,16 +185,20 @@ async def process_faq_question(message: Message, state: FSMContext):
 async def process_faq_answer(message: Message, state: FSMContext):
     data = await state.get_data()
     async with pool.acquire() as conn:
-        await conn.execute("INSERT INTO faq (question, answer) VALUES ($1, $2)", data['question'], message.text)
+        # Зберігаємо категорію разом із питанням
+        await conn.execute(
+            "INSERT INTO faq (category, question, answer) VALUES ($1, $2, $3)", 
+            data['category'], data['question'], message.text
+        )
         
-    await message.answer("✅ Питання успішно додано!")
+    await message.answer(f"✅ Питання успішно додано до групи «{data['category']}»!")
     await state.clear()
 
 # ================= КЕРУВАННЯ FAQ =================
 @router.callback_query(F.data == "admin_manage", F.from_user.id.in_(ADMIN_IDS))
 async def admin_manage_list(callback: CallbackQuery):
     async with pool.acquire() as conn:
-        faqs = await conn.fetch("SELECT id, question FROM faq ORDER BY id ASC")
+        faqs = await conn.fetch("SELECT id, category, question FROM faq ORDER BY category ASC, id ASC")
         
     if not faqs:
         return await callback.message.edit_text(
@@ -167,7 +208,8 @@ async def admin_manage_list(callback: CallbackQuery):
     
     kb = []
     for f in faqs:
-        kb.append([InlineKeyboardButton(text=f"📌 {f['question']}", callback_data=f"admin_select_{f['id']}")])
+        # Показуємо категорію поруч з питанням для зручності адміна
+        kb.append([InlineKeyboardButton(text=f"📌 [{f['category']}] {f['question']}", callback_data=f"admin_select_{f['id']}")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back_to_panel")])
     
     await callback.message.edit_text("Обери питання, яке хочеш змінити чи видалити:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -176,19 +218,19 @@ async def admin_manage_list(callback: CallbackQuery):
 async def admin_select_faq(callback: CallbackQuery):
     faq_id = int(callback.data.replace("admin_select_", ""))
     async with pool.acquire() as conn:
-        record = await conn.fetchrow("SELECT question, answer FROM faq WHERE id = $1", faq_id)
+        record = await conn.fetchrow("SELECT category, question, answer FROM faq WHERE id = $1", faq_id)
         
     if not record:
         return await callback.answer("Помилка! Питання не знайдено.", show_alert=True)
         
-    text = f"<b>Поточне питання:</b>\n{record['question']}\n\n<b>Поточна відповідь:</b>\n{record['answer']}"
+    text = f"<b>Група:</b> {record['category']}\n<b>Поточне питання:</b>\n{record['question']}\n\n<b>Поточна відповідь:</b>\n{record['answer']}"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Редагувати", callback_data=f"admin_edit_{faq_id}"),
+        [InlineKeyboardButton(text="✏️ Редагувати (Лише П/В)", callback_data=f"admin_edit_{faq_id}"),
          InlineKeyboardButton(text="🗑 Видалити", callback_data=f"admin_del_{faq_id}")],
         [InlineKeyboardButton(text="⬅️ Назад до списку", callback_data="admin_manage")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-
+    
 @router.callback_query(F.data.startswith("admin_del_"), F.from_user.id.in_(ADMIN_IDS))
 async def admin_delete_faq(callback: CallbackQuery):
     faq_id = int(callback.data.replace("admin_del_", ""))
