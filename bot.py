@@ -79,14 +79,17 @@ def get_persistent_kb():
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     
-    # === ЗБЕРЕЖЕННЯ КОРИСТУВАЧА ДЛЯ СТАТИСТИКИ ===
-    async with pool.acquire() as conn:
-        # ON CONFLICT DO NOTHING означає: якщо цей ID вже є, не видавати помилку, а просто йти далі
-        await conn.execute(
-            "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-            message.from_user.id
-        )
-    # ===============================================
+    # === ЗБЕРЕЖЕННЯ КОРИСТУВАЧА ===
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
+                message.from_user.id
+            )
+            print(f"Користувач {message.from_user.id} успішно записаний!")
+    except Exception as e:
+        print(f"❌ ПОМИЛКА запису в БД: {e}")
+    # ==============================
 
     await message.answer("Привіт! 👋 Я бот-помічник.", reply_markup=get_persistent_kb())
     await message.answer("Обери потрібний розділ нижче:", reply_markup=get_main_kb())
