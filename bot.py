@@ -95,19 +95,36 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "faq_menu")
 async def open_faq_categories(callback: CallbackQuery):
     async with pool.acquire() as conn:
-        # Отримуємо унікальні категорії
         categories = await conn.fetch("SELECT DISTINCT category FROM faq ORDER BY category ASC")
         
     keyboard = []
     for c in categories:
         cat = c['category']
-        # Створюємо кнопку для кожної групи питань
         keyboard.append([InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"faq_cat_{cat}")])
+    
+    # === ДОДАЄМО ТВОЇ ОКРЕМІ КНОПКИ ===
+    # Варіант 1: Якщо це просто посилання, які відкривають Telegram-канали/чати
+    keyboard.append([InlineKeyboardButton(text="💬 Чати 1 курсу", url="https://t.me/твій_чат")])
+    keyboard.append([InlineKeyboardButton(text="🌐 Наші соц. мережі", url="https://t.me/твій_канал")])
+    
+    # Варіант 2: Якщо ти хочеш, щоб бот надсилав текст із посиланнями у відповідь, 
+    # замість url="..." використовуй callback_data="chats_info" і створи для них окремий обробник (див. нижче).
     
     keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_main")])
     
-    text = "Обери групу питань:" if categories else "Поки немає жодного питання."
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await callback.message.edit_text("Обери групу питань або корисні посилання:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    
+@router.callback_query(F.data == "show_chats")
+async def show_chats_handler(callback: CallbackQuery):
+    text = "<b>Наші чати 1 курсу:</b>\n\n1. Чат ФІОТ: @link1\n2. Чат ФЕЛ: @link2"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="faq_menu")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+
+@router.callback_query(F.data == "show_socials")
+async def show_socials_handler(callback: CallbackQuery):
+    text = "<b>Наші соціальні мережі:</b>\n\n📸 Instagram: link\n✈️ Telegram: link"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="faq_menu")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("faq_cat_"))
 async def show_faq_in_category(callback: CallbackQuery):
@@ -115,13 +132,20 @@ async def show_faq_in_category(callback: CallbackQuery):
     category = callback.data.replace("faq_cat_", "")
     
     async with pool.acquire() as conn:
-        # Шукаємо питання лише для вибраної категорії
-        faqs = await conn.fetch("SELECT id, question FROM faq WHERE category = $1 ORDER BY id ASC", category)
+        # ВАЖЛИВО: Тепер ми дістаємо з бази ще й answer (відповідь), щоб перевірити, чи це лінк
+        faqs = await conn.fetch("SELECT id, question, answer FROM faq WHERE category = $1 ORDER BY id ASC", category)
         
     keyboard = []
     for f in faqs:
-        # Щоб не було конфліктів, змінимо префікс на faq_q_
-        keyboard.append([InlineKeyboardButton(text=f['question'], callback_data=f"faq_q_{f['id']}")])
+        answer_text = f['answer'].strip() # Забираємо зайві пробіли по краях
+        
+        # Перевіряємо, чи є відповідь прямим посиланням
+        if answer_text.startswith("http://") or answer_text.startswith("https://"):
+            # Якщо так, робимо кнопку-посилання (url=...)
+            keyboard.append([InlineKeyboardButton(text=f['question'], url=answer_text)])
+        else:
+            # Якщо це звичайний текст, робимо стандартну кнопку (callback_data=...)
+            keyboard.append([InlineKeyboardButton(text=f['question'], callback_data=f"faq_q_{f['id']}")])
         
     # Кнопка повернення до списку категорій
     keyboard.append([InlineKeyboardButton(text="⬅️ До груп питань", callback_data="faq_menu")])
