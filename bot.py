@@ -336,19 +336,20 @@ async def ask_for_message(callback: CallbackQuery, state: FSMContext):
     await state.set_state(ContactAdmin.waiting_for_message)
 
 
-@router.message(ContactAdmin.waiting_for_message, F.text | F.photo)
+@router.message(ContactAdmin.waiting_for_message, F.text | F.photo | F.document)
 async def forward_to_admins(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else "Без юзернейму"
     
     text_content = message.text or message.caption or "Без тексту"
     photo_id = message.photo[-1].file_id if message.photo else None
+    document_id = message.document.file_id if message.document else None
 
     try:
         async with pool.acquire() as conn:
             ticket_id = await conn.fetchval(
-                "INSERT INTO tickets (user_id, username, text, photo_id) VALUES ($1, $2, $3, $4) RETURNING id",
-                user_id, username, text_content, photo_id
+                "INSERT INTO tickets (user_id, username, text, photo_id, document_id) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+                user_id, username, text_content, photo_id, document_id
             )
         
         admin_text = (
@@ -360,7 +361,9 @@ async def forward_to_admins(message: Message, state: FSMContext):
         
         for admin_id in ADMIN_IDS:
             try:
-                if photo_id:
+                if document_id:
+                    await bot.send_document(admin_id, document=document_id, caption=admin_text, parse_mode="HTML")
+                elif photo_id:
                     await bot.send_photo(admin_id, photo=photo_id, caption=admin_text, parse_mode="HTML")
                 else:
                     await bot.send_message(admin_id, admin_text, parse_mode="HTML")
@@ -375,6 +378,7 @@ async def forward_to_admins(message: Message, state: FSMContext):
         
     finally:
         await state.clear()
+
 
 @router.callback_query(F.data == "admin_pending_tickets", F.from_user.id.in_(ADMIN_IDS))
 async def view_pending_tickets(callback: CallbackQuery):
@@ -419,16 +423,19 @@ async def select_ticket_to_reply(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ReplyFromPanel.waiting_for_reply)
 
-@router.message(ReplyFromPanel.waiting_for_reply, F.text | F.photo)
+@router.message(ReplyFromPanel.waiting_for_reply, F.text | F.photo | F.document)
 async def process_panel_reply(message: Message, state: FSMContext):
     data = await state.get_data()
     reply_text = message.text or message.caption or ""
     photo_id = message.photo[-1].file_id if message.photo else None
+    document_id = message.document.file_id if message.document else None
     
     caption = f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{reply_text}"
 
     try:
-        if photo_id:
+        if document_id:
+            await bot.send_document(data['reply_user_id'], document=document_id, caption=caption, parse_mode="HTML")
+        elif photo_id:
             await bot.send_photo(data['reply_user_id'], photo=photo_id, caption=caption, parse_mode="HTML")
         else:
             await bot.send_message(data['reply_user_id'], caption, parse_mode="HTML")
@@ -445,7 +452,6 @@ async def process_panel_reply(message: Message, state: FSMContext):
 
 @router.message(F.reply_to_message & F.from_user.id.in_(ADMIN_IDS))
 async def reply_from_admin(message: Message):
-    # Оригінальне повідомлення може бути як текстом, так і фото з підписом
     original_text = message.reply_to_message.text or message.reply_to_message.caption
     
     if original_text and "ID:" in original_text:
@@ -457,12 +463,15 @@ async def reply_from_admin(message: Message):
                 async with pool.acquire() as conn:
                     await conn.execute("DELETE FROM tickets WHERE id = $1", int(ticket_match.group(1)))
             
-            # Відповідь адміна може бути з фото
             reply_text = message.text or message.caption or ""
             photo_id = message.photo[-1].file_id if message.photo else None
+            document_id = message.document.file_id if message.document else None
+            
             caption = f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{reply_text}"
             
-            if photo_id:
+            if document_id:
+                await bot.send_document(user_id, document=document_id, caption=caption, parse_mode="HTML")
+            elif photo_id:
                 await bot.send_photo(user_id, photo=photo_id, caption=caption, parse_mode="HTML")
             else:
                 await bot.send_message(user_id, caption, parse_mode="HTML")
