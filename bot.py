@@ -341,35 +341,40 @@ async def forward_to_admins(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else "Без юзернейму"
     
-    # Отримуємо текст або підпис до фотографії
     text_content = message.text or message.caption or "Без тексту"
-    # Якщо є фото, беремо останнє (найвищої якості)
     photo_id = message.photo[-1].file_id if message.photo else None
 
-    async with pool.acquire() as conn:
-        ticket_id = await conn.fetchval(
-            "INSERT INTO tickets (user_id, username, text, photo_id) VALUES ($1, $2, $3, $4) RETURNING id",
-            user_id, username, text_content, photo_id
+    try:
+        async with pool.acquire() as conn:
+            ticket_id = await conn.fetchval(
+                "INSERT INTO tickets (user_id, username, text, photo_id) VALUES ($1, $2, $3, $4) RETURNING id",
+                user_id, username, text_content, photo_id
+            )
+        
+        admin_text = (
+            f"📩 <b>Нове питання! [Тикет #{ticket_id}]</b>\n"
+            f"Від: {message.from_user.full_name} ({username})\n"
+            f"ID: <code>{user_id}</code>\n\n"
+            f"<b>Текст:</b>\n{text_content}"
         )
-    
-    admin_text = (
-        f"📩 <b>Нове питання! [Тикет #{ticket_id}]</b>\n"
-        f"Від: {message.from_user.full_name} ({username})\n"
-        f"ID: <code>{user_id}</code>\n\n"
-        f"<b>Текст:</b>\n{text_content}"
-    )
-    
-    for admin_id in ADMIN_IDS:
-        try:
-            if photo_id:
-                await bot.send_photo(admin_id, photo=photo_id, caption=admin_text, parse_mode="HTML")
-            else:
-                await bot.send_message(admin_id, admin_text, parse_mode="HTML")
-        except Exception:
-            pass
-            
-    await message.answer("✅ Твоє повідомлення надіслано адміністраторам!")
-    await state.clear()
+        
+        for admin_id in ADMIN_IDS:
+            try:
+                if photo_id:
+                    await bot.send_photo(admin_id, photo=photo_id, caption=admin_text, parse_mode="HTML")
+                else:
+                    await bot.send_message(admin_id, admin_text, parse_mode="HTML")
+            except Exception:
+                pass
+                
+        await message.answer("✅ Твоє повідомлення надіслано адміністраторам!")
+        
+    except Exception as e:
+        print(f"❌ ПОМИЛКА тикета: {e}")
+        await message.answer("❌ Сталася помилка при збереженні повідомлення. Спробуй ще раз пізніше.")
+        
+    finally:
+        await state.clear()
 
 @router.callback_query(F.data == "admin_pending_tickets", F.from_user.id.in_(ADMIN_IDS))
 async def view_pending_tickets(callback: CallbackQuery):
