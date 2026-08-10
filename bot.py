@@ -51,7 +51,8 @@ async def init_db():
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
                 username TEXT,
-                text TEXT NOT NULL,
+                text TEXT,
+                photo_id TEXT, -- ДОДАНО: збереження ID фотографії
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -334,27 +335,36 @@ async def ask_for_message(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ContactAdmin.waiting_for_message)
 
-@router.message(ContactAdmin.waiting_for_message, F.text)
+
+@router.message(ContactAdmin.waiting_for_message, F.text | F.photo)
 async def forward_to_admins(message: Message, state: FSMContext):
     user_id = message.from_user.id
     username = f"@{message.from_user.username}" if message.from_user.username else "Без юзернейму"
     
+    # Отримуємо текст або підпис до фотографії
+    text_content = message.text or message.caption or "Без тексту"
+    # Якщо є фото, беремо останнє (найвищої якості)
+    photo_id = message.photo[-1].file_id if message.photo else None
+
     async with pool.acquire() as conn:
         ticket_id = await conn.fetchval(
-            "INSERT INTO tickets (user_id, username, text) VALUES ($1, $2, $3) RETURNING id",
-            user_id, username, message.text
+            "INSERT INTO tickets (user_id, username, text, photo_id) VALUES ($1, $2, $3, $4) RETURNING id",
+            user_id, username, text_content, photo_id
         )
     
     admin_text = (
         f"📩 <b>Нове питання! [Тикет #{ticket_id}]</b>\n"
         f"Від: {message.from_user.full_name} ({username})\n"
         f"ID: <code>{user_id}</code>\n\n"
-        f"<b>Текст:</b>\n{message.text}"
+        f"<b>Текст:</b>\n{text_content}"
     )
     
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_message(admin_id, admin_text, parse_mode="HTML")
+            if photo_id:
+                await bot.send_photo(admin_id, photo=photo_id, caption=admin_text, parse_mode="HTML")
+            else:
+                await bot.send_message(admin_id, admin_text, parse_mode="HTML")
         except Exception:
             pass
             
@@ -404,11 +414,20 @@ async def select_ticket_to_reply(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ReplyFromPanel.waiting_for_reply)
 
-@router.message(ReplyFromPanel.waiting_for_reply, F.text)
+@router.message(ReplyFromPanel.waiting_for_reply, F.text | F.photo)
 async def process_panel_reply(message: Message, state: FSMContext):
     data = await state.get_data()
+    reply_text = message.text or message.caption or ""
+    photo_id = message.photo[-1].file_id if message.photo else None
+    
+    caption = f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{reply_text}"
+
     try:
-        await bot.send_message(data['reply_user_id'], f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{message.text}", parse_mode="HTML")
+        if photo_id:
+            await bot.send_photo(data['reply_user_id'], photo=photo_id, caption=caption, parse_mode="HTML")
+        else:
+            await bot.send_message(data['reply_user_id'], caption, parse_mode="HTML")
+            
         await message.answer("✅ Відповідь успішно надіслана!")
 
         async with pool.acquire() as conn:
@@ -421,7 +440,9 @@ async def process_panel_reply(message: Message, state: FSMContext):
 
 @router.message(F.reply_to_message & F.from_user.id.in_(ADMIN_IDS))
 async def reply_from_admin(message: Message):
-    original_text = message.reply_to_message.text
+    # Оригінальне повідомлення може бути як текстом, так і фото з підписом
+    original_text = message.reply_to_message.text or message.reply_to_message.caption
+    
     if original_text and "ID:" in original_text:
         try:
             user_id = int(re.search(r"ID:\s*(\d+)", original_text).group(1))
@@ -431,7 +452,16 @@ async def reply_from_admin(message: Message):
                 async with pool.acquire() as conn:
                     await conn.execute("DELETE FROM tickets WHERE id = $1", int(ticket_match.group(1)))
             
-            await bot.send_message(user_id, f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{message.text}", parse_mode="HTML")
+            # Відповідь адміна може бути з фото
+            reply_text = message.text or message.caption or ""
+            photo_id = message.photo[-1].file_id if message.photo else None
+            caption = f"🧑‍💻 <b>Відповідь від адміністратора:</b>\n\n{reply_text}"
+            
+            if photo_id:
+                await bot.send_photo(user_id, photo=photo_id, caption=caption, parse_mode="HTML")
+            else:
+                await bot.send_message(user_id, caption, parse_mode="HTML")
+                
             await message.reply("✅ Відповідь надіслана! Питання закрито.")
         except Exception as e:
             await message.reply(f"❌ Помилка: {e}")
