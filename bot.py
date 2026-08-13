@@ -34,6 +34,10 @@ class EditFAQ(StatesGroup):
     
 class ReplyFromPanel(StatesGroup):
     waiting_for_reply = State()
+    
+class Broadcast(StatesGroup):
+    waiting_for_message = State()
+    confirm_broadcast = State()
 
 # ================= БАЗА ДАНИХ =================
 async def init_db():
@@ -190,10 +194,11 @@ async def show_faq_answer(callback: CallbackQuery):
 async def cmd_admin_panel(message: Message, state: FSMContext):
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Розсилка", callback_data="admin_broadcast")], # <--- ДОДАНО ТУТ
         [InlineKeyboardButton(text="➕ Додати нове питання", callback_data="admin_add")],
         [InlineKeyboardButton(text="⚙️ Редагувати / Видалити", callback_data="admin_manage")],
         [InlineKeyboardButton(text="📥 Нерозв'язані питання", callback_data="admin_pending_tickets")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")] # <--- НОВА КНОПКА
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")]
     ])
     await message.answer("🛠 <b>Панель адміністратора</b>\nОбери дію:", reply_markup=kb, parse_mode="HTML")
 
@@ -486,7 +491,114 @@ from aiohttp import web
 # Функція-відповідь для пінгера (UptimeRobot)
 async def health_check(request):
     return web.Response(text="Bot is awake and running!")
+# ================= РОЗСИЛКА (BROADCAST) =================
 
+@router.callback_query(F.data == "admin_broadcast", F.from_user.id.in_(ADMIN_IDS))
+async def broadcast_start(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "📢 <b>Створення розсилки</b>\n\n"
+        "Надішли мені повідомлення, яке хочеш розіслати. "
+        "Це може бути просто текст, або фото/документ із підписом.\n\n"
+        "<i>Після цього ти зможеш надіслати його тестово адмінам, перш ніж слати всім.</i>",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_back_to_panel")]
+        ]),
+        parse_mode="HTML"
+    )
+    await state.set_state(Broadcast.waiting_for_message)
+
+@router.message(Broadcast.waiting_for_message, F.from_user.id.in_(ADMIN_IDS))
+async def broadcast_preview(message: Message, state: FSMContext):
+    # Зберігаємо ID повідомлення та ID чату, щоб потім його скопіювати
+    await state.update_data(
+        bc_message_id=message.message_id,
+        bc_chat_id=message.chat.id
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👀 Тест (Лише адмінам)", callback_data="bc_test")],
+        [InlineKeyboardButton(text="🚀 Розіслати ВСІМ (1500+)", callback_data="bc_all")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_back_to_panel")]
+    ])
+    
+    await message.reply(
+        "👆 Ось так виглядає твоє повідомлення.\n"
+        "Що робимо далі?",
+        reply_markup=kb
+    )
+    await state.set_state(Broadcast.confirm_broadcast)
+
+@router.callback_query(Broadcast.confirm_broadcast, F.data == "bc_test", F.from_user.id.in_(ADMIN_IDS))
+async def broadcast_test(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    msg_id = data.get("bc_message_id")
+    chat_id = data.get("bc_chat_id")
+    
+    success = 0
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.copy_message(
+                chat_id=admin_id,
+                from_chat_id=chat_id,
+                message_id=msg_id
+            )
+            success += 1
+        except Exception:
+            pass
+            
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Розіслати ВСІМ (1500+)", callback_data="bc_all")],
+        [InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_back_to_panel")]
+    ])
+    
+    await callback.message.answer(
+        f"✅ <b>Тест завершено!</b>\nПовідомлення отримали {success} з {len(ADMIN_IDS)} адмінів.\n\n"
+        f"Якщо все добре — тисни кнопку нижче, щоб надіслати всім.",
+        reply_markup=kb,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+@router.callback_query(Broadcast.confirm_broadcast, F.data == "bc_all", F.from_user.id.in_(ADMIN_IDS))
+async def broadcast_all(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    msg_id = data.get("bc_message_id")
+    chat_id = data.get("bc_chat_id")
+    
+    # Одразу повідомляємо, що процес пішов, і скидаємо стан
+    await callback.message.edit_text("⏳ <b>Розсилка почалась!</b> Це може зайняти кілька хвилин. Бот повідомить тебе по завершенню.", parse_mode="HTML")
+    await state.clear()
+    
+    async with pool.acquire() as conn:
+        # Беремо всіх унікальних юзерів
+        users = await conn.fetch("SELECT DISTINCT user_id FROM users")
+        
+    success = 0
+    blocked = 0
+    
+    for u in users:
+        try:
+            await bot.copy_message(
+                chat_id=u['user_id'],
+                from_chat_id=chat_id,
+                message_id=msg_id
+            )
+            success += 1
+        except Exception:
+            # Юзер міг заблокувати бота
+            blocked += 1
+            
+        # ВАЖЛИВО: Затримка, щоб Telegram не заблокував бота за спам-ліміти
+        # Telegram дозволяє відправляти до ~30 повідомлень на секунду. 0.05 сек — це безпечно.
+        await asyncio.sleep(0.05)
+        
+    await bot.send_message(
+        callback.from_user.id,
+        f"✅ <b>Розсилку успішно завершено!</b>\n\n"
+        f"📈 Доставлено: {success}\n"
+        f"🚫 Заблокували бота / помилки: {blocked}",
+        parse_mode="HTML"
+    )
 # ================= ЗАПУСК =================
 async def main():
     # 1. Твоя ініціалізація БД та роутерів
