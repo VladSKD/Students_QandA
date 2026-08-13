@@ -38,6 +38,7 @@ class ReplyFromPanel(StatesGroup):
 class Broadcast(StatesGroup):
     waiting_for_message = State()
     confirm_broadcast = State()
+    waiting_for_ids = State() # <--- ДОДАНО НОВИЙ СТАН
 
 # ================= БАЗА ДАНИХ =================
 async def init_db():
@@ -517,13 +518,14 @@ async def broadcast_preview(message: Message, state: FSMContext):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👀 Тест (Лише адмінам)", callback_data="bc_test")],
+        [InlineKeyboardButton(text="🎯 Надіслати за ID", callback_data="bc_specific")], # <--- ДОДАНА КНОПКА
         [InlineKeyboardButton(text="🚀 Розіслати ВСІМ (1500+)", callback_data="bc_all")],
         [InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_back_to_panel")]
     ])
     
     await message.reply(
         "👆 Ось так виглядає твоє повідомлення.\n"
-        "Що робимо далі?",
+        "Обери, кому його надіслати:",
         reply_markup=kb
     )
     await state.set_state(Broadcast.confirm_broadcast)
@@ -597,6 +599,66 @@ async def broadcast_all(callback: CallbackQuery, state: FSMContext):
         f"✅ <b>Розсилку успішно завершено!</b>\n\n"
         f"📈 Доставлено: {success}\n"
         f"🚫 Заблокували бота / помилки: {blocked}",
+        parse_mode="HTML"
+    )
+    
+    
+@router.callback_query(Broadcast.confirm_broadcast, F.data == "bc_specific", F.from_user.id.in_(ADMIN_IDS))
+async def ask_for_specific_ids(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "Введи <b>ID користувачів через кому</b>, яким потрібно надіслати повідомлення.\n"
+        "<i>Наприклад: 12345678, 87654321, 11223344</i>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_back_to_panel")]
+        ])
+    )
+    # Переводимо бота в стан очікування вводу ID
+    await state.set_state(Broadcast.waiting_for_ids)
+
+@router.message(Broadcast.waiting_for_ids, F.text, F.from_user.id.in_(ADMIN_IDS))
+async def send_to_specific_ids(message: Message, state: FSMContext):
+    # 1. Парсимо текст: розбиваємо по комі та видаляємо зайві пробіли
+    raw_ids = message.text.split(",")
+    user_ids = []
+    
+    for uid in raw_ids:
+        clean_id = uid.strip()
+        if clean_id.isdigit():  # Перевіряємо, чи це дійсно цифри
+            user_ids.append(int(clean_id))
+            
+    if not user_ids:
+        return await message.answer("Я не знайшов жодного коректного ID. Спробуй ще раз (введи цифри через кому):")
+        
+    # 2. Дістаємо дані повідомлення, яке треба надіслати
+    data = await state.get_data()
+    msg_id = data.get("bc_message_id")
+    chat_id = data.get("bc_chat_id")
+    
+    await message.answer(f"⏳ <b>Розсилка почалась</b> для {len(user_ids)} користувачів...", parse_mode="HTML")
+    await state.clear()
+    
+    success = 0
+    blocked = 0
+    
+    # 3. Робимо розсилку за зібраними ID
+    for u_id in user_ids:
+        try:
+            await bot.copy_message(
+                chat_id=u_id,
+                from_chat_id=chat_id,
+                message_id=msg_id
+            )
+            success += 1
+        except Exception:
+            blocked += 1
+            
+        await asyncio.sleep(0.05) # Захист від лімітів Telegram
+        
+    await message.answer(
+        f"✅ <b>Розсилку за ID успішно завершено!</b>\n\n"
+        f"📈 Доставлено: {success}\n"
+        f"🚫 Не доставлено (помилка/блокування): {blocked}",
         parse_mode="HTML"
     )
 # ================= ЗАПУСК =================
