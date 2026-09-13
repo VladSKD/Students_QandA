@@ -9,9 +9,20 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.filters import CommandStart, Command
 
+from dotenv import load_dotenv
+from google import genai
+
+load_dotenv()
+
 # ================= НАЛАШТУВАННЯ =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY не знайдено")
+
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 ADMIN_IDS = [6132348011, 965741347, 484191739, 607833367, 1406393889]  
 
 bot = Bot(token=BOT_TOKEN)
@@ -22,6 +33,9 @@ pool = None  # Глобальний пул з'єднань з БД
 # ================= СТАНИ =================
 class ContactAdmin(StatesGroup):
     waiting_for_message = State()
+
+class AIQuestion(StatesGroup):
+    waiting_for_question = State()
 
 class AddFAQ(StatesGroup):
     waiting_for_category = State() # Новий стан для групи питань
@@ -66,7 +80,8 @@ async def init_db():
 def get_main_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💡 Часті питання (FAQ)", callback_data="faq_menu")],
-        [InlineKeyboardButton(text="✉️ Написати адміністратору", callback_data="contact_admin")]
+        [InlineKeyboardButton(text="✉️ Написати адміністратору", callback_data="contact_admin")],
+        [InlineKeyboardButton(text="🤖 Відповідь від AI", callback_data="ai_answer")]
     ])
 
 def get_back_kb():
@@ -109,6 +124,24 @@ async def show_main_menu_text(message: Message, state: FSMContext):
 async def back_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("Головне меню:", reply_markup=get_main_kb())
+
+@router.callback_query(F.data == "ai_answer")
+async def ai_answer_start(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+
+    await callback.message.edit_text(
+        "🤖 <b>Відповідь від AI</b>\n\n"
+        "Напиши своє питання одним повідомленням.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="❌ Скасувати",
+                callback_data="back_to_main"
+            )]
+        ]),
+        parse_mode="HTML"
+    )
+
+    await state.set_state(AIQuestion.waiting_for_question)
 
 # ================= ЛОГІКА FAQ =================
 @router.callback_query(F.data == "faq_menu")
@@ -661,6 +694,58 @@ async def send_to_specific_ids(message: Message, state: FSMContext):
         f"🚫 Не доставлено (помилка/блокування): {blocked}",
         parse_mode="HTML"
     )
+
+@router.message(AIQuestion.waiting_for_question, F.text)
+async def ai_answer_question(message: Message, state: FSMContext):
+
+    question = message.text.strip()
+
+    await message.answer("🤔 Формую відповідь...")
+
+    try:
+        interaction = await asyncio.to_thread(
+            gemini_client.interactions.create,
+            model="gemini-3.5-flash-lite",
+            input=f"""
+Ти — AI-помічник студентів Національного університету
+«Львівська політехніка».
+
+Студент поставив питання:
+
+{question}
+
+Дай корисну, зрозумілу та природну відповідь українською мовою.
+
+Правила:
+- відповідай українською;
+- не вигадуй конкретні факти про Львівську політехніку;
+- не вигадуй телефони, посилання, дедлайни, розклад
+  або правила університету;
+- якщо не впевнений у конкретній інформації,
+  прямо скажи про це;
+- не кажи, що ти працівник університету;
+- представляй себе як AI-помічника;
+- не згадуй технічні деталі роботи моделі.
+"""
+        )
+
+        answer = interaction.output_text
+
+        if not answer:
+            answer = "😔 Не вдалося сформувати відповідь."
+
+        await message.answer(answer)
+
+    except Exception as e:
+        print(f"❌ Помилка Gemini: {e}")
+
+        await message.answer(
+            "😔 На жаль, зараз AI не може сформувати відповідь. "
+            "Спробуй ще раз пізніше."
+        )
+
+    finally:
+        await state.clear()
 # ================= ЗАПУСК =================
 async def main():
     # 1. Твоя ініціалізація БД та роутерів
